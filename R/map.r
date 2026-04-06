@@ -57,15 +57,12 @@ make_bezier_arc <- function(p1, p2, n = 50, k = 0.5, k_noise = 0.1) {
   return(st_linestring(pts))
 }
 
-#' Draw a choropleth map of states colored by a specified variable, with an optional CSV file for state-level data.
+#' Merge the states data with a CSV file containing additional information (e.g., days spent in each state) based on the GEOID column.
 #' @param states An `sf` object containing the state geometries and a GEOID column.
-#' @param var The name of the variable in the states data to use for coloring.
-#' @param pal A vector of colors to use for the choropleth.
-#' @param breaks A numeric vector of break points for the choropleth.
-#' @param days_csv An optional path to a CSV file containing state-level data with a GEOID column. If NULL, an internal example CSV will be used.
-#' @return A merged `sf` object containing the state geometries joined with the data from the CSV file.
+#' @param days_csv An optional path to a CSV file containing additional state data with a GEOID column. If NULL, an internal example CSV will be used.
+#' @return An `sf` object with the merged data.
 #' @export
-draw_states <- function(states, days_csv = NULL, var, pal, breaks) {
+merge_states <- function(states, days_csv=NULL) {
   # Read the CSV file, either from the internal example or from the user-provided path
   if (is.null(days_csv)) {
     # Pull the internal example file
@@ -85,8 +82,17 @@ draw_states <- function(states, days_csv = NULL, var, pal, breaks) {
   states$GEOID = as.numeric(states$GEOID)
   states_data = read.csv(file_path, stringsAsFactors=FALSE)
   states = merge(states, states_data, by="GEOID", all.x=TRUE)
+ 
+  return(states)
+}
 
-  # Draw the map
+#' Draw a choropleth map of states colored by a specified variable
+#' @param states An `sf` object containing the state geometries and a GEOID column.
+#' @param var The name of the variable in the states data to use for coloring.
+#' @param pal A vector of colors to use for the choropleth.
+#' @param breaks A numeric vector of break points for the choropleth.
+#' @export
+draw_states <- function(states, var, pal, breaks) {
   mf_map(x = states, type = "base", col = NA, border = NA)
 
   mf_shadow(
@@ -106,8 +112,6 @@ draw_states <- function(states, days_csv = NULL, var, pal, breaks) {
     leg_pos = NA,
     add = TRUE
   )
-
-  return(states)
 }
 
 #' Compute flight paths between airports based on a CSV file of flight data, 
@@ -218,7 +222,7 @@ get_hexes <- function(states, spatial_layers, res=3) {
 }
 
 #
-# Draw the map
+# Gather and transform the data
 #
 data("us_states")
 
@@ -226,6 +230,14 @@ states_csv = system.file("extdata", "states.csv", package = "travelmapr")
 flights_csv = system.file("extdata", "flights.csv", package = "travelmapr")
 roadtrips_dir = system.file("extdata", "roadtrips", package = "travelmapr")
 
+states <- merge_states(us_states, days_csv = states_csv)
+flights <- get_flights(states, flights_csv = flights_csv, k=0.45, k_noise=0.1)
+roads <- get_road_trips(states, roadtrips_dir)
+hexes <- get_hexes(states, spatial_layers = list(flights$airports, roads), res=3)
+
+#
+# Draw the map
+#
 pal <- c("white","#fefeb5", "#fee391", "#fec44f", "#fe9929", "#d95f0e", "#993404", "#662506" ) 
 breaks <- c(0, 0.041, 1, 7, 30, 365, 3650, 36500)
 
@@ -236,10 +248,7 @@ png(
     res = 150,
     type = "cairo")
 
-states <- draw_states(us_states, days_csv = states_csv, var = "days", pal = pal, breaks = breaks)
-flights <- get_flights(states, flights_csv = flights_csv, k=0.45, k_noise=0.1)
-roads <- get_road_trips(states, roadtrips_dir)
-hexes <- get_hexes(states, spatial_layers = list(flights$airports, roads), res=3)
+draw_states(states, var = "days", pal = pal, breaks = breaks)
 mf_map(roads, col = "#0000ff88", lwd=0.25, add = TRUE )
 mf_map(hexes, col="#FFFFFF98", border="#00000014", lwd=0.5, add = TRUE)
 mf_map(flights$airports, add = TRUE, col = "black", pch = 18, cex = 0.5)
