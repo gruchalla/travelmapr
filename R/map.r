@@ -110,16 +110,14 @@ draw_states <- function(states, days_csv = NULL, var, pal, breaks) {
   return(states)
 }
 
-#' Draw flight paths between airports based on a CSV file of flight data, 
-#' with optional parameters for line color, width, curvature, and noise.
+#' Compute flight paths between airports based on a CSV file of flight data, 
+#' with optional parameters curvature, and noise.
 #' @param flights_csv An optional path to a CSV file containing flight data with two columns for origin and destination IATA codes. If NULL, an internal example CSV will be used.
-#' @param col The color to use for the flight paths.
-#' @param lwd The line width to use for the flight paths.
 #' @param k The curvature parameter for the Bezier arcs representing flight paths.
 #' @param k_noise The amount of noise to add to the curvature parameter for visual variety in the flight paths.
-#' @return An `sf` object containing the airport locations as points
+#' @return A list wtih `sf` objects containing the airport locations as points and the flight paths (arcs) as linestrings.
 #' @export
-draw_flights <- function(states, flights_csv=NULL, col = "black", lwd = 0.25, k=0.45, k_noise=0.1) {
+get_flights <- function(states, flights_csv=NULL, k=0.45, k_noise=0.1) {
   if (is.null(flights_csv)) {
     # Pull the internal example file
     file_path <- system.file("extdata", "flights.csv", package = "travelmapr")
@@ -150,20 +148,16 @@ draw_flights <- function(states, flights_csv=NULL, col = "black", lwd = 0.25, k=
   arcs <- st_as_sf(flights, geometry = st_sfc(curves, crs = 4326))
   arcs <- st_wrap_dateline(arcs, options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"))
 
-  mf_map(arcs, col = "black", lwd = 0.25, add = TRUE)
-
-  return(st_as_sf(airports, coords = c("Longitude", "Latitude"), crs = st_crs(states)))
+  return(list(airports = st_as_sf(airports, coords = c("Longitude", "Latitude"), crs = st_crs(states)), arcs = arcs))
 }
 
 
-#' Draw road trips on the map based on KML files in a specified directory, with optional parameters for line color and width.
+#' Create road trips on the map based on KML files in a specified directory
 #' @param states An `sf` object containing the state geometries and a GEOID column, used for coordinate reference.
 #' @param roadtrip_dir An optional path to a directory containing KML files of road trips. If NULL, an internal example directory will be used.
-#' @param col The color to use for the road trip lines.
-#' @param lwd The line width to use for the road trip lines.
 #' @return An `sf` object containing the road trip paths as linestrings.
 #' @export
-draw_road_trips <- function(states, roadtrip_dir=NULL, col = "#0000ff88", lwd=0.25) {
+get_road_trips <- function(states, roadtrip_dir=NULL) {
   if (is.null(roadtrip_dir)) {
     roadtrip_dir <- system.file("extdata", "roadtrips", package = "travelmapr")
   }
@@ -187,21 +181,16 @@ draw_road_trips <- function(states, roadtrip_dir=NULL, col = "#0000ff88", lwd=0.
   roads <- roads[st_is(roads, "LINESTRING"), ]
   roads <- st_transform(roads, st_crs(states))
   
-  mf_map(roads, col = col, lwd=lwd, add = TRUE )
-
   return(roads)
 }
 
-#' Draw hexagonal grid cells over the map, coloring only those that do not intersect with any of the provided spatial features (e.g., airports, roads).
+#' Get hexagonal grid cells over the map, keeping only those that do not intersect with any of the provided spatial features (e.g., airports, roads).
 #' @param states An `sf` object containing the state geometries, used to define the area for the hexagonal grid.
 #' @param sf_list A list of `sf` objects representing spatial features (e.g., airports, roads) that should be checked for intersections with the hexagonal grid cells.
 #' @param res The resolution parameter for the H3 hexagonal grid (higher values create smaller hexagons).
-#' @param col The color to use for the hexagonal grid cells that do not intersect with any of the provided spatial features.
-#' @param border The color to use for the borders of the hexagonal grid cells.
-#' @param lwd The line width to use for the borders of the hexagonal grid cells.
 #' @return An `sf` object containing the hexagonal grid cells that do not intersect with any of the provided spatial features.
 #' @export
-draw_hexes <- function(states, spatial_layers, res=3, col="#FFFFFF98", border="#00000014", lwd=0.5) {
+get_hexes <- function(states, spatial_layers, res=3) {
 
   bbox <- st_buffer(st_transform(st_as_sfc(st_bbox(states)), 5070), 50000) # buffer in meters to ensure coverage beyond the borders of the states
   bbox <- st_transform(bbox, 4326) # H3 operates in WGS84 (EPSG:4326)
@@ -224,8 +213,6 @@ draw_hexes <- function(states, spatial_layers, res=3, col="#FFFFFF98", border="#
 
   has_intersections <- Reduce(`|`, list_of_logical_vectors)
   h3_hexes <- h3_hexes[!has_intersections, ]
-
-  mf_map(h3_hexes, col = col, border = border, lwd=lwd, add = TRUE)
 
   return(h3_hexes)
 }
@@ -250,10 +237,13 @@ png(
     type = "cairo")
 
 states <- draw_states(us_states, days_csv = states_csv, var = "days", pal = pal, breaks = breaks)
-airports <- draw_flights(states, flights_csv=flights_csv)
-mf_map(airports, add = TRUE, col = "black", pch = 18, cex = 0.5)
-roads <- draw_road_trips(states, roadtrips_dir)
-hexes <- draw_hexes(states, spatial_layers = list(airports, roads), res=3)
+flights <- get_flights(states, flights_csv = flights_csv, k=0.45, k_noise=0.1)
+roads <- get_road_trips(states, roadtrips_dir)
+hexes <- get_hexes(states, spatial_layers = list(flights$airports, roads), res=3)
+mf_map(roads, col = "#0000ff88", lwd=0.25, add = TRUE )
+mf_map(hexes, col="#FFFFFF98", border="#00000014", lwd=0.5, add = TRUE)
+mf_map(flights$airports, add = TRUE, col = "black", pch = 18, cex = 0.5)
+mf_map(flights$arcs, col = "black", lwd = 0.25, add = TRUE)
 
 dev.off()
 graphics.off()
