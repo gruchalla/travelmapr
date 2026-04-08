@@ -5,6 +5,10 @@ library(airportr)
 library(bezier)
 library(h3jsr)
 library(dplyr)
+data("world")
+data("great_lakes")
+
+world <- world[world$continent == "North America",] #name_long %in% c("Canada", "Mexico"), ]
 
 #' Create a Bezier arc (i.e., stylistic flight path) between two points, with an optional curvature parameter k.
 #'
@@ -60,9 +64,10 @@ make_bezier_arc <- function(p1, p2, n = 50, k = 0.5, k_noise = 0.1) {
 #' Merge the states data with a CSV file containing additional information (e.g., days spent in each state) based on the GEOID column.
 #' @param states An `sf` object containing the state geometries and a GEOID column.
 #' @param days_csv An optional path to a CSV file containing additional state data with a GEOID column. If NULL, an internal example CSV will be used.
+#' @param crs An optional coordinate reference system to transform the states data to after merging. If NULL, the original CRS will be retained.
 #' @return An `sf` object with the merged data.
 #' @export
-merge_states <- function(states, days_csv=NULL) {
+merge_states <- function(states, days_csv=NULL, crs=NULL) {
   # Read the CSV file, either from the internal example or from the user-provided path
   if (is.null(days_csv)) {
     # Pull the internal example file
@@ -83,6 +88,11 @@ merge_states <- function(states, days_csv=NULL) {
   states_data = read.csv(file_path, stringsAsFactors=FALSE)
   states = merge(states, states_data, by="GEOID", all.x=TRUE)
  
+  # Optionally transform the CRS of the states data
+  if (!is.null(crs)) {
+    states <- st_transform(states, crs)
+  }
+
   return(states)
 }
 
@@ -91,9 +101,15 @@ merge_states <- function(states, days_csv=NULL) {
 #' @param var The name of the variable in the states data to use for coloring.
 #' @param pal A vector of colors to use for the choropleth.
 #' @param breaks A numeric vector of break points for the choropleth.
+#' @param add A logical value indicating whether to add to an existing map. Default is FALSE.
 #' @export
-draw_states <- function(states, var, pal, breaks) {
-  mf_map(x = states, type = "base", col = NA, border = NA)
+draw_states <- function(states, var, pal, breaks, add = FALSE) {
+
+  mf_map(x = states, type = "base", col = NA, border = NA, add = add)
+  rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], col = "#9abac6", border = NA) 
+  
+  mf_map(x=st_transform(world, st_crs(states)), col = "#f2f2f2", border = NA, add = TRUE)
+  mf_map(x=st_transform(great_lakes, st_crs(states)), col = "#95becc", border = NA, add = TRUE)
 
   mf_shadow(
     x = states,
@@ -149,10 +165,11 @@ get_flights <- function(states, flights_csv=NULL, k=0.45, k_noise=0.1) {
     )
   })
 
-  arcs <- st_as_sf(flights, geometry = st_sfc(curves, crs = 4326))
+  arcs <- st_transform(st_as_sf(flights, geometry = st_sfc(curves, crs = 4326)), st_crs(states))
   arcs <- st_wrap_dateline(arcs, options = c("WRAPDATELINE=YES", "DATELINEOFFSET=180"))
+  airports = st_transform(st_as_sf(airports, coords = c("Longitude", "Latitude"), crs = 4326), st_crs(states))
 
-  return(list(airports = st_as_sf(airports, coords = c("Longitude", "Latitude"), crs = st_crs(states)), arcs = arcs))
+  return(list(airports = airports, arcs = arcs))
 }
 
 
@@ -196,17 +213,19 @@ get_road_trips <- function(states, roadtrip_dir=NULL) {
 #' @export
 get_hexes <- function(states, spatial_layers, res=3) {
 
-  bbox <- st_buffer(st_transform(st_as_sfc(st_bbox(states)), 5070), 50000) # buffer in meters to ensure coverage beyond the borders of the states
+  bbox <- st_buffer(st_transform(st_as_sfc(st_bbox(states)), 5070), 500000) # buffer in meters to ensure coverage beyond the borders of the states
+  bbox <- st_segmentize(bbox, units::set_units(10, km)) # segmentize to ensure the bounding box is detailed enough (near the poles) for accurate hex generation
   bbox <- st_transform(bbox, 4326) # H3 operates in WGS84 (EPSG:4326)
+
   hex_ids <- polygon_to_cells(bbox, res = res, simple = TRUE)
   h3_hexes <- cell_to_polygon(hex_ids, simple = FALSE)
   h3_hexes <- st_transform(h3_hexes, st_crs(states))
-  h3_hexes <- h3_hexes[st_intersects(h3_hexes, st_union(states), sparse = FALSE), ] # only keep hexes that intersect with the states
+  #h3_hexes <- h3_hexes[st_intersects(h3_hexes, st_union(states), sparse = FALSE), ] # only keep hexes that intersect with the states
 
   # find all the visited hexes by checking for intersections with the provided sf objects (e.g., airports, roads)
   list_of_logical_vectors <- lapply(spatial_layers, function(layer) {
-      # Ensure CRS matches h3_hexes (4326) and drop Z if needed
-      layer_clean <- sf::st_zm(sf::st_transform(layer, st_crs(states)))
+      # Ensure CRS matches h3_hexes and drop Z if needed
+      layer_clean <- sf::st_zm(sf::st_transform(layer, st_crs(h3_hexes)))
   
       # Check for intersections
       inter <- sf::st_intersects(h3_hexes, layer_clean, sparse = FALSE)
@@ -230,7 +249,7 @@ states_csv = system.file("extdata", "states.csv", package = "travelmapr")
 flights_csv = system.file("extdata", "flights.csv", package = "travelmapr")
 roadtrips_dir = system.file("extdata", "roadtrips", package = "travelmapr")
 
-states <- merge_states(us_states, days_csv = states_csv)
+states <- merge_states(us_states, days_csv = states_csv, crs=5070)
 flights <- get_flights(states, flights_csv = flights_csv, k=0.45, k_noise=0.1)
 roads <- get_road_trips(states, roadtrips_dir)
 hexes <- get_hexes(states, spatial_layers = list(flights$airports, roads), res=3)
@@ -244,16 +263,45 @@ breaks <- c(0, 0.041, 1, 7, 30, 365, 3650, 36500)
 png(
     filename = "map.png",
     width = 2560,
-    height = 1640,
+    height = 1920,
     res = 150,
     type = "cairo")
 
-draw_states(states, var = "days", pal = pal, breaks = breaks)
+mf_init(x = states, expandBB = c(0.15, 0, 0, 0)) 
+draw_states(states, var = "days", pal = pal, breaks = breaks, add = TRUE)
 mf_map(roads, col = "#0000ff88", lwd=0.25, add = TRUE )
-mf_map(hexes, col="#FFFFFF98", border="#00000014", lwd=0.5, add = TRUE)
-mf_map(flights$airports, add = TRUE, col = "black", pch = 18, cex = 0.5)
+mf_map(hexes, col="#FFFFFF78", border="#00000014", lwd=0.5, add = TRUE)
+mf_map(flights$airports, col = "black", pch = 18, cex = 0.5, add = TRUE)
 mf_map(flights$arcs, col = "black", lwd = 0.25, add = TRUE)
+
+# Hawaii inset
+data("hawaii")
+hawaii <- merge_states(hawaii, days_csv = states_csv, crs=3759)
+hi_hexes <- get_hexes(hawaii, spatial_layers = list(flights$airports, roads), res=3)
+
+#mf_inset_on(x = hawaii, pos = "bottomleft", cex = 0.15) 
+mf_inset_on(fig = c(0.36, 0.55, 0.005, 0.125))
+draw_states(hawaii, var = "days", pal = pal, breaks = breaks)
+box(col = "black", lwd = 1) 
+mf_map(hi_hexes, col="#FFFFFF98", border="#00000014", lwd=0.5, add = TRUE)
+mf_map(st_transform(roads, st_crs(hawaii)), col = "#0000ff88", lwd=0.25, add = TRUE )
+mf_map(st_transform(flights$airports, st_crs(hawaii)), col = "black", pch = 18, cex = 0.5, add = TRUE)
+mf_map(st_transform(flights$arcs, st_crs(hawaii)), col = "black", lwd = 0.25, add = TRUE)
+mf_inset_off()
+
+# Alaska inset
+data("alaska")
+alaska <- merge_states(alaska, days_csv = states_csv, crs=3338)
+ak_hexes <- get_hexes(alaska, spatial_layers = list(flights$airports, roads), res=3)
+
+mf_inset_on(x = alaska, pos = "bottomleft", cex = 0.35) 
+draw_states(alaska, var = "days", pal = pal, breaks = breaks)
+box(col = "black", lwd = 1) 
+mf_map(ak_hexes, col="#FFFFFF98", border="#00000014", lwd=0.5, add = TRUE)
+mf_map(st_transform(roads, st_crs(alaska)), col = "#0000ff88", lwd=0.25, add = TRUE )
+mf_map(st_transform(flights$airports, st_crs(alaska)), col = "black", pch = 18, cex = 0.5, add = TRUE)
+mf_map(st_transform(flights$arcs, st_crs(alaska)), col = "black", lwd = 0.25, add = TRUE)
+mf_inset_off()
 
 dev.off()
 graphics.off()
-
