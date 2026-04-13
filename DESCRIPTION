@@ -16,3 +16,6 @@ Imports:
     mapsf,
     sf,
     spData
+Depends: 
+    R (>= 3.5)
+LazyData: true
